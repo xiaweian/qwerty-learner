@@ -1,47 +1,42 @@
-import React, { useCallback, useEffect, useState } from 'react'
-import Header from '@/components/Header'
-import Main from '@/components/Main'
-import Word from '@/components/Word'
-import Translation from '@/components/Translation'
-import Speed from '@/components/Speed'
-import Loading from '@/components/Loading'
-import Phonetic from '@/components/Phonetic'
-import PronunciationSwitcher from './PronunciationSwitcher'
-import { isLegal, IsDesktop } from '@/utils/utils'
-import { useHotkeys } from 'react-hotkeys-hook'
-import useSwitcherState from './hooks/useSwitcherState'
-import Switcher from './Switcher'
-import { useWordList } from './hooks/useWordList'
 import Layout from '../../components/Layout'
-import { NavLink } from 'react-router-dom'
-import usePronunciation from './hooks/usePronunciation'
+import { DictChapterButton } from './components/DictChapterButton'
+import PronunciationSwitcher from './components/PronunciationSwitcher'
+import ResultScreen from './components/ResultScreen'
+import Speed from './components/Speed'
+import StartButton from './components/StartButton'
+import Switcher from './components/Switcher'
+import WordList from './components/WordList'
+import WordPanel from './components/WordPanel'
+import { useConfetti } from './hooks/useConfetti'
+import { useWordList } from './hooks/useWordList'
+import { TypingContext, TypingStateActionType, initialState, typingReducer } from './store'
+import { DonateCard } from '@/components/DonateCard'
+import Header from '@/components/Header'
+import StarCard from '@/components/StarCard'
 import Tooltip from '@/components/Tooltip'
-import { useRandomState } from '@/store/AppState'
-import Progress from './Progress'
-import ResultScreen, { IncorrectInfo, ResultSpeedInfo } from '@/components/ResultScreen'
-import mixpanel from 'mixpanel-browser'
-import { ChapterStatUpload, WordStat, WordStatUpload } from '@/utils/statInfo'
-import dayjs from 'dayjs'
+import { idDictionaryMap } from '@/resources/dictionary'
+import { currentChapterAtom, currentDictIdAtom, isReviewModeAtom, randomConfigAtom, reviewModeInfoAtom } from '@/store'
+import { IsDesktop, isLegal } from '@/utils'
+import { useSaveChapterRecord } from '@/utils/db'
+import { useMixPanelChapterLogUploader } from '@/utils/mixpanel'
+import { useAtom, useAtomValue, useSetAtom } from 'jotai'
+import type React from 'react'
+import { useCallback, useEffect, useState } from 'react'
+import { useImmerReducer } from 'use-immer'
 
 const App: React.FC = () => {
-  const [order, setOrder] = useState<number>(0)
-  const [inputCount, setInputCount] = useState<number>(0)
-  const [correctCount, setCorrectCount] = useState<number>(0)
-  const [isStart, setIsStart] = useState<boolean>(false)
-  const [switcherState, switcherStateDispatch] = useSwitcherState({ wordVisible: true, phonetic: false })
-  const wordList = useWordList()
-  const [pronunciation, pronunciationDispatch] = usePronunciation()
-  const [random] = useRandomState()
+  const [state, dispatch] = useImmerReducer(typingReducer, structuredClone(initialState))
+  const [isLoading, setIsLoading] = useState<boolean>(true)
+  const { words } = useWordList()
 
-  //props for ResultScreen
-  const [resultScreenState, setResultScreenState] = useState<boolean>(false)
-  const [incorrectInfo, setIncorrectInfo] = useState<IncorrectInfo[]>([])
-  const [speedInfo, setSpeedInfo] = useState<ResultSpeedInfo>({ speed: '', minute: 0, second: 0 })
+  const [currentDictId, setCurrentDictId] = useAtom(currentDictIdAtom)
+  const setCurrentChapter = useSetAtom(currentChapterAtom)
+  const randomConfig = useAtomValue(randomConfigAtom)
+  const chapterLogUploader = useMixPanelChapterLogUploader(state)
+  const saveChapterRecord = useSaveChapterRecord()
 
-  useEffect(() => {
-    // reset order when random change
-    setOrder(0)
-  }, [random])
+  const reviewModeInfo = useAtomValue(reviewModeInfoAtom)
+  const isReviewMode = useAtomValue(isReviewModeAtom)
 
   useEffect(() => {
     // 检测用户设备
@@ -54,216 +49,126 @@ const App: React.FC = () => {
     }
   }, [])
 
-  useHotkeys(
-    'enter',
-    () => {
-      if (resultScreenState === false) {
-        setIsStart((isStart) => !isStart)
-      }
-    },
-    [resultScreenState],
-  )
+  // 在组件挂载和currentDictId改变时，检查当前字典是否存在，如果不存在，则将其重置为默认值
+  useEffect(() => {
+    const id = currentDictId
+    if (!(id in idDictionaryMap)) {
+      setCurrentDictId('cet4')
+      setCurrentChapter(0)
+      return
+    }
+  }, [currentDictId, setCurrentChapter, setCurrentDictId])
+
+  const skipWord = useCallback(() => {
+    dispatch({ type: TypingStateActionType.SKIP_WORD })
+  }, [dispatch])
 
   useEffect(() => {
-    const onKeydown = (e: KeyboardEvent) => {
-      if (!resultScreenState) {
-        if (isLegal(e.key) && !e.altKey && !e.ctrlKey && !e.metaKey) {
-          if (isStart) {
-            setInputCount((count) => count + 1)
-          }
-        }
-        setIsStart(true)
-      }
-    }
     const onBlur = () => {
-      if (isStart) {
-        setIsStart(false)
-      }
+      dispatch({ type: TypingStateActionType.SET_IS_TYPING, payload: false })
     }
-    const hjOnclick = () => {
-      setIsStart(false)
-    }
-
     window.addEventListener('blur', onBlur)
-    window.addEventListener('keydown', onKeydown)
-    document.getElementsByClassName('_hj_feedback_container')[0]?.addEventListener('click', hjOnclick)
 
     return () => {
-      window.removeEventListener('keydown', onKeydown)
       window.removeEventListener('blur', onBlur)
-      document.getElementsByClassName('_hj_feedback_container')[0]?.removeEventListener('click', hjOnclick)
     }
-  }, [isStart, resultScreenState])
+  }, [dispatch])
 
-  const onFinish = (everWrong: boolean, wordStat: WordStat) => {
-    if (wordList === undefined) {
-      return
-    }
-    // 优先更新数据
-    setCorrectCount((count) => count + wordList.words[order].name.trim().length)
-    // 记录错误数据
-    if (everWrong) {
-      setIncorrectInfo((prev) => [...prev, { word: wordList.words[order].name, translation: wordList.words[order].trans.join('；') }])
-    }
+  useEffect(() => {
+    state.chapterData.words?.length > 0 ? setIsLoading(false) : setIsLoading(true)
+  }, [state.chapterData.words])
 
-    const wordStatUpload: WordStatUpload = {
-      ...wordStat,
-      order: order + 1,
-      chapter: (wordList.chapter + 1).toString(),
-      wordlist: wordList.dictName,
-      modeDictation: !switcherState.wordVisible,
-      modeDark: switcherState.darkMode,
-      modeShuffle: switcherState.random,
-      enabledKeyboardSound: switcherState.sound,
-      enabledPhotonicsSymbol: switcherState.phonetic,
-      pronunciationAuto: pronunciation !== false,
-      pronunciationOption: pronunciation === false ? 'none' : pronunciation,
-    }
-    mixpanel.track('Word', wordStatUpload)
-    // 更新正确率
-    if (order === wordList.words.length - 1) {
-      setIsStart(false)
-
-      // 上传埋点数据
-      const chapterStatUpload: ChapterStatUpload = {
-        timeEnd: dayjs.utc().format('YYYY-MM-DD HH:mm:ss'),
-        duration: speedInfo.second + speedInfo.minute * 60,
-        countInput: inputCount,
-        countTypo: inputCount - correctCount,
-        countCorrect: correctCount,
-        chapter: (wordList.chapter + 1).toString(),
-        wordlist: wordList.dictName,
-        modeDictation: !switcherState.wordVisible,
-        modeDark: switcherState.darkMode,
-        modeShuffle: switcherState.random,
-        enabledKeyboardSound: switcherState.sound,
-        enabledPhotonicsSymbol: switcherState.phonetic,
-        pronunciationAuto: pronunciation !== false,
-        pronunciationOption: pronunciation === false ? 'none' : pronunciation,
+  useEffect(() => {
+    if (!state.isTyping) {
+      const onKeyDown = (e: KeyboardEvent) => {
+        if (!isLoading && e.key !== 'Enter' && (isLegal(e.key) || e.key === ' ') && !e.altKey && !e.ctrlKey && !e.metaKey) {
+          e.preventDefault()
+          dispatch({ type: TypingStateActionType.SET_IS_TYPING, payload: true })
+        }
       }
+      window.addEventListener('keydown', onKeyDown)
 
-      mixpanel.track('Chapter', chapterStatUpload)
-
-      // 用户完成当前章节
-      setResultScreenState(true)
-    } else {
-      setOrder((order) => order + 1)
+      return () => window.removeEventListener('keydown', onKeyDown)
     }
-  }
+  }, [state.isTyping, isLoading, dispatch])
 
-  const changePronunciation = useCallback(
-    (state: string) => {
-      pronunciationDispatch(state)
-    },
-    [pronunciationDispatch],
-  )
+  useEffect(() => {
+    if (words !== undefined) {
+      const initialIndex = isReviewMode && reviewModeInfo.reviewRecord?.index ? reviewModeInfo.reviewRecord.index : 0
 
-  const addChapter = useCallback(() => {
-    if (wordList === undefined) {
-      return
+      dispatch({
+        type: TypingStateActionType.SETUP_CHAPTER,
+        payload: { words, shouldShuffle: randomConfig.isOpen, initialIndex },
+      })
     }
-    wordList.setChapterNumber(wordList.chapter + 1)
-  }, [wordList])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [words])
 
-  const setDictation = useCallback(
-    (option) => {
-      switcherStateDispatch('wordVisible', !option)
-      //dictation mode being set to 'true' indicates that the word is invisible.
-    },
-    [switcherStateDispatch],
-  )
+  useEffect(() => {
+    // 当用户完成章节后且完成 word Record 数据保存，记录 chapter Record 数据,
+    if (state.isFinished && !state.isSavingRecord) {
+      chapterLogUploader()
+      saveChapterRecord(state)
+    }
 
-  const repeatButtonHandler = () => {
-    setResultScreenState(false)
-    setIncorrectInfo([])
-    setOrder(0)
-    setIsStart(true)
-  }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [state.isFinished, state.isSavingRecord])
 
-  const invisibleButtonHandler = () => {
-    setResultScreenState(false)
-    setIncorrectInfo([])
-    setOrder(0)
-    setIsStart(true)
-    setDictation(true)
-  }
+  useEffect(() => {
+    // 启动计时器
+    let intervalId: number
+    if (state.isTyping) {
+      intervalId = window.setInterval(() => {
+        dispatch({ type: TypingStateActionType.TICK_TIMER })
+      }, 1000)
+    }
+    return () => clearInterval(intervalId)
+  }, [state.isTyping, dispatch])
 
-  const nextButtonHandler = () => {
-    setResultScreenState(false)
-    setIncorrectInfo([])
-    addChapter()
-    setOrder(0)
-    setIsStart(true)
-    setDictation(false)
-  }
+  useConfetti(state.isFinished)
 
   return (
-    <>
-      {resultScreenState && (
-        <ResultScreen
-          incorrectInfo={incorrectInfo}
-          speedInfo={speedInfo}
-          repeatButtonHandler={repeatButtonHandler}
-          invisibleButtonHandler={invisibleButtonHandler}
-          nextButtonHandler={nextButtonHandler}
-        ></ResultScreen>
-      )}
-      {wordList === undefined ? (
-        <Loading />
-      ) : (
-        <Layout>
-          <Header>
-            <Tooltip content="词典章节切换">
-              <NavLink
-                className="text-lg px-4 py-1 rounded-lg transition-colors duration-300 ease-in-out focus:outline-none dark:text-white dark:text-opacity-60 hover:bg-indigo-400 hover:text-white dark:hover:text-opacity-100 block"
-                to="/gallery"
-              >
-                {wordList.dictName} 第 {wordList.chapter + 1} 章
-              </NavLink>
-            </Tooltip>
-            <Tooltip content="发音切换">
-              <PronunciationSwitcher state={pronunciation.toString()} changePronunciationState={changePronunciation} />
-            </Tooltip>
-            <Switcher state={switcherState} dispatch={switcherStateDispatch} />
-            <Tooltip content="快捷键 Enter">
-              <button
-                className={`${
-                  isStart ? 'bg-gray-300 dark:bg-gray-700' : 'bg-indigo-400'
-                }  text-white dark:text-opacity-80 transition-colors duration-300 text-lg w-20 px-6 py-1 rounded-lg focus:outline-none flex items-center justify-center`}
-                onClick={(e) => {
-                  setIsStart((isStart) => !isStart)
-                }}
-              >
-                {isStart ? 'Pause' : 'Start'}
-              </button>
-            </Tooltip>
-          </Header>
-          <Main>
-            <div className="container h-full relative flex mx-auto flex-col items-center">
-              <div className="h-1/3"></div>
-              {!isStart && <h3 className="pb-4 text-xl text-gray-600 dark:text-gray-50 animate-pulse">按任意键开始</h3>}
-              {isStart && (
-                <div className="flex flex-col items-center">
-                  <Word
-                    key={`word-${wordList.words[order].name}-${order}`}
-                    word={wordList.words[order].name}
-                    onFinish={onFinish}
-                    isStart={isStart}
-                    wordVisible={switcherState.wordVisible}
-                  />
-                  {switcherState.phonetic && (wordList.words[order].usphone || wordList.words[order].ukphone) && (
-                    <Phonetic usphone={wordList.words[order].usphone} ukphone={wordList.words[order].ukphone} />
-                  )}
-                  <Translation key={`trans-${wordList.words[order].name}`} trans={wordList.words[order].trans.join('；')} />
+    <TypingContext.Provider value={{ state: state, dispatch }}>
+      <StarCard />
+      {state.isFinished && <DonateCard />}
+      {state.isFinished && <ResultScreen />}
+      <Layout>
+        <Header>
+          <DictChapterButton />
+          <PronunciationSwitcher />
+          <Switcher />
+          <StartButton isLoading={isLoading} />
+          <Tooltip content="跳过该词">
+            <button
+              className={`${
+                state.isShowSkip ? 'bg-orange-400' : 'invisible w-0 bg-gray-300 px-0 opacity-0'
+              } my-btn-primary transition-all duration-300 `}
+              onClick={skipWord}
+            >
+              Skip
+            </button>
+          </Tooltip>
+        </Header>
+        <div className="container mx-auto flex h-full flex-1 flex-col items-center justify-center pb-5">
+          <div className="container relative mx-auto flex h-full flex-col items-center">
+            <div className="container flex flex-grow items-center justify-center">
+              {isLoading ? (
+                <div className="flex flex-col items-center justify-center ">
+                  <div
+                    className="inline-block h-8 w-8 animate-spin rounded-full border-4 border-solid  border-indigo-400 border-r-transparent align-[-0.125em] motion-reduce:animate-[spin_1.5s_linear_infinite]"
+                    role="status"
+                  ></div>
                 </div>
+              ) : (
+                !state.isFinished && <WordPanel />
               )}
-              {isStart && <Progress order={order} wordsLength={wordList.words.length} />}
-              <Speed correctCount={correctCount} inputCount={inputCount} isStart={isStart} setSpeedInfo={setSpeedInfo} />
             </div>
-          </Main>
-        </Layout>
-      )}
-    </>
+            <Speed />
+          </div>
+        </div>
+      </Layout>
+      <WordList />
+    </TypingContext.Provider>
   )
 }
 
